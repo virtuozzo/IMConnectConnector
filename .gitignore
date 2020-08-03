@@ -1,0 +1,12 @@
+# Vim swap files
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+
+__pycache__/
+*.py[cod]
+.tox/
+.coverage
+.idea/
+dist/
+MANIFEST
+cloudblue_connector.egg-info

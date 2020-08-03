@@ -1,0 +1,14 @@
+{
+    "infraKeystoneEndpoint": "https://192.168.1.40:5000/v3",
+    "infraDomain": "Default",
+    "infraProject": "admin",
+    "infraUser": "vstorage-service-user",
+    "infraPassword": "***********",
+    "apiEndpoint": "https://api.connect.cloud.im/public/v1",
+    "apiKey": "ApiKey SU-469-692-689:*****************",
+    "products": ["PRD-063-065-206","PRD-022-814-775"],
+    "templates": {
+        "PRD-022-814-775": {"grant": "TL-699-973-660", "revoke": "Access to VDC has been revoked"},
+        "PRD-063-065-206": {"grant": "TL-101-949-609", "revoke": "Access to VDC has been revoked"}
+    }
+}

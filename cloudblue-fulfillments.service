@@ -1,0 +1,19 @@
+#******************************************************************************
+# Copyright (c) 2020, Virtuozzo International GmbH.
+# This source code is distributed under MIT software license.
+#******************************************************************************
+
+[Unit]
+Description=Connect to backend, fulfillments service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/cloudblue-fulfillments
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

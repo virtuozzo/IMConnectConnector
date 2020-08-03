@@ -1,0 +1,46 @@
+#******************************************************************************
+# Copyright (c) 2020, Virtuozzo International GmbH.
+# This source code is distributed under MIT software license.
+#******************************************************************************
+
+[MASTER]
+
+# List of plugins (as comma separated values of python modules names) to load,
+# usually to register additional checkers.
+# load-plugins=pylint_quotes
+
+
+[BASIC]
+
+# Good variable names which should always be accepted, separated by a comma
+good-names=i,j,k,n,rv,e,c,x,f,vt,a,u,_
+
+
+[FORMAT]
+
+# Maximum number of characters on a single line.
+max-line-length=80
+
+# Enforce string formatting style, provided by the pylint_quotes plugin.
+string-quote=single
+triple-quote=double
+docstring-quote=double
+
+
+[DESIGN]
+
+# Maximum number of arguments for function / method.
+max-args=7
+
+# Minimum number of public methods for a class (see R0903).
+min-public-methods=0
+
+
+[MESSAGES CONTROL]
+
+disable=
+    broad-except,
+    useless-object-inheritance,
+    C0111,
+    R0201,
+    W0511
