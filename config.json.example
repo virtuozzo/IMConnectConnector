@@ -4,9 +4,15 @@
     "infraProject": "admin",
     "infraUser": "vstorage-service-user",
     "infraPassword": "***********",
+    "misc": {
+        "domainCreation": true,
+        "imageUpload": true,
+        "hidePasswordsInLog" : true
+    },
     "apiEndpoint": "https://api.connect.cloud.im/public/v1",
     "apiKey": "ApiKey SU-469-692-689:*****************",
     "products": ["PRD-063-065-206","PRD-022-814-775"],
+    "report_usage": ["PRD-063-065-206"],
     "templates": {
         "PRD-022-814-775": {"grant": "TL-699-973-660", "revoke": "Access to VDC has been revoked"},
         "PRD-063-065-206": {"grant": "TL-101-949-609", "revoke": "Access to VDC has been revoked"}

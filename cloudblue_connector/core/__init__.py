@@ -1,12 +1,10 @@
-#!/usr/bin/python
 # ******************************************************************************
 # Copyright (c) 2020-2021, Virtuozzo International GmbH.
 # This source code is distributed under MIT software license.
 # ******************************************************************************
 
-import cloudblue_connector.runners as runners
+from .logger import getLogger
 
-
-if __name__ == '__main__':
-    rv = runners.process_usage_files()
-    print(rv)
+__all__ = [
+    'getLogger'
+]

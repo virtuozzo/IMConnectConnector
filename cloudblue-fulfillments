@@ -1,12 +1,12 @@
 #!/usr/bin/python
-#******************************************************************************
-# Copyright (c) 2020, Virtuozzo International GmbH.
+# ******************************************************************************
+# Copyright (c) 2020-2021, Virtuozzo International GmbH.
 # This source code is distributed under MIT software license.
-#******************************************************************************
+# ******************************************************************************
 
-import cloudblue_connector as connector
+import cloudblue_connector.runners as runners
 
 
 if __name__ == '__main__':
-    rv = connector.process_fulfillment()
+    rv = runners.process_fulfillment()
     print(rv)

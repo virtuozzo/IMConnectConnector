@@ -6,7 +6,9 @@ __pycache__/
 *.py[cod]
 .tox/
 .coverage
+coverage.xml
 .idea/
 dist/
+venv/
 MANIFEST
 cloudblue_connector.egg-info

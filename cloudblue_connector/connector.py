@@ -1,245 +1,90 @@
-#******************************************************************************
-# Copyright (c) 2020, Virtuozzo International GmbH.
+# ******************************************************************************
+# Copyright (c) 2020-2021, Virtuozzo International GmbH.
 # This source code is distributed under MIT software license.
-#******************************************************************************
+# ******************************************************************************
 
 import copy
-import functools
+import itertools
 import json
-import logging
 import os
 import sys
+from datetime import datetime
 
-from datetime import datetime, timedelta
 import dateutil.parser
-
-from connect.config import Config
-from connect.models import \
-        ActivationTemplateResponse, ActivationTileResponse
-
-from keystoneauth1 import identity
-from keystoneauth1.session import Session as KeystoneSession
-from keystoneclient.v3.client import Client as KeystoneClient
-from keystoneclient.exceptions import BadRequest as KeystoneBadRequest
-from keystoneclient.exceptions import Conflict as KeystoneConflict
-from keystoneclient.exceptions import NotFound as KeystoneNotFound
-from keystoneclient.exceptions import \
-    EndpointNotFound as KeystoneEndpointNotFound
-
 from cinderclient.client import Client as CinderClient
 from cinderclient.exceptions import BadRequest as CinderBadRequest
-
+from connect.config import Config
+from connect.models import ActivationTemplateResponse, ActivationTileResponse
+from glanceclient.client import Client as GlanceClient
 from gnocchiclient.client import Client as GnocchiClient
-
-from neutronclient.v2_0.client import Client as NeutronClient
-from neutronclient.common.exceptions import BadRequest as NeutronBadRequest
-
-from novaclient.client import Client as NovaClient
-from novaclient.exceptions import BadRequest as NovaBadRequest
-
+from keystoneauth1 import identity
+from keystoneauth1.session import Session as KeystoneSession
+from keystoneclient.exceptions import BadRequest as KeystoneBadRequest
+from keystoneclient.exceptions import Conflict as KeystoneConflict
+from keystoneclient.exceptions import EndpointNotFound as KeystoneEndpointNotFound
+from keystoneclient.exceptions import NotFound as KeystoneNotFound
+from keystoneclient.v3.client import Client as KeystoneClient
 from magnumclient.client import Client as MagnumClient
-from magnumclient.exceptions import HTTPBadRequest as MagnumBadRequest
-
+from neutronclient.v2_0.client import Client as NeutronClient
+from novaclient.client import Client as NovaClient
 from octaviaclient.api.v2.octavia import OctaviaAPI as OctaviaClient
-from octaviaclient.api.v2.octavia import OctaviaClientException
 
+from cloudblue_connector.core import getLogger
+from cloudblue_connector.core.decorators import once, memoize, log_exception, MISSING
 
-def getLogger(name):
-    logger = logging.getLogger(name)
-    logger.setLevel('DEBUG')
-    return logger
-
-LOG = getLogger(__name__)
-
-_MISSING = type('MissingValue', tuple(), dict())()
-
-
-class BadQuota(Exception):
-    pass
-
-
-class QuotaUpdater(object):
-    """Base class for quota updaters"""
-
-    def __init__(self, client, project_id):
-        self._client = client
-        self._project_id = project_id
-        self._prev = None
-
-    def update(self, quotas):
-        """Update quota values"""
-
-        self._prev = self._update(quotas)
-
-    def rollback(self, ):
-        if self._prev is None:
-            return
-        self.update(self._prev)
-        self._prev = None
-
-    def _update(self, quotas):
-        raise NotImplementedError()
-
-
-class CinderQuotaUpdater(QuotaUpdater):
-    def _update(self, quotas):
-        """Update volumes quotas"""
-
-        current_quotas = {
-            key: value for key, value in
-            self._client.quotas.get(self._project_id).to_dict().items()
-            if key.startswith('gigabytes_')
-        }
-        new_quotas = {key: 0 for key in current_quotas.keys()}
-
-        total = 0
-        for vt in quotas.keys():
-            value = quotas[vt]
-            if total == -1 or value == -1:
-                total = -1
-            else:
-                total += value
-            new_quotas[vt] = value
-        new_quotas['gigabytes'] = total
-        try:
-            self._client.quotas.update(self._project_id, **new_quotas)
-            return current_quotas
-        except CinderBadRequest:
-            raise BadQuota('Current storage usage is higher than new limit.')
-
-
-class NovaQuotaUpdater(QuotaUpdater):
-    def _update(self, quotas):
-        """Update cores and ram quotas"""
-
-        current_quotas = {
-            key: value for key, value in
-            self._client.quotas.get(self._project_id).to_dict().items()
-            if key in {'cores', 'ram'}
-        }
-
-        try:
-            self._client.quotas.update(self._project_id, **quotas)
-            return current_quotas
-        except NovaBadRequest:
-            raise BadQuota('Current CPU and RAM usage is higher '
-                           'than new limits.')
-
-
-class NeutronQuotaUpdater(QuotaUpdater):
-    def _update(self, quotas):
-        """Update floating ip quotas"""
-
-        quota_and_usage = self._client.show_quota_details(self._project_id)['quota']
-        current_quotas = {
-            key: value['limit'] for key, value in quota_and_usage.items()
-            if key in {'floatingip'}
-        }
-
-        try:
-            if (quotas.get('floatingip', -1) >= 0 and
-                    (quota_and_usage.get('floatingip', {}).get('used', 0) >
-                     quotas['floatingip'])):
-                raise NeutronBadRequest()
-            self._client.update_quota(self._project_id,
-                                      body=dict(quota=quotas))
-            return current_quotas
-        except NeutronBadRequest:
-            raise BadQuota('Current amount of Floating IPs is higher '
-                           'than new limits.')
-
-
-class MagnumQuotaUpdater(QuotaUpdater):
-    def _update(self, quotas):
-        """Update k8saas clusters quota"""
-
-        if not self._client:
-            return
-
-        quota_and_usage = self._client.quotas.get(
-            self._project_id, 'Cluster')
-        current_quotas = {'hard_limit': quota_and_usage.hard_limit}
-
-        try:
-            if (quotas.get('hard_limit', -1) >= 0 and
-                    (quota_and_usage.in_use > quotas['hard_limit'])):
-                raise MagnumBadRequest()
-            if not hasattr(quota_and_usage, 'created_at'):
-                self._client.quotas.create(project_id=self._project_id,
-                                           resource='Cluster',
-                                           **quotas)
-            else:
-                self._client.quotas.update(self._project_id, 'Cluster', quotas)
-            return current_quotas
-        except MagnumBadRequest:
-            raise BadQuota('Current kubernetes cluster amount is higher '
-                           'than new limits.')
-
-
-class OctaviaQuotaUpdater(QuotaUpdater):
-    def _update(self, quotas):
-        """Update loadbalancers quota"""
-
-        if not self._client:
-            return
-
-        quota_and_usage = self._client.quota_show(self._project_id)
-        current_quotas = {
-            key: value for key, value in quota_and_usage.items()
-            if key in {'load_balancer'}
-        }
-
-        try:
-            if (quotas.get('load_balancer', -1) >= 0 and
-                    (quota_and_usage.get('in_use_load_balancer') or 0) >
-                    quotas['load_balancer']):
-                raise OctaviaClientException(code=400)
-            self._client.quota_set(self._project_id, json=dict(quota=quotas))
-            return current_quotas
-        except OctaviaClientException as e:
-            if e.code != 400:
-                raise
-            raise BadQuota('Current amount of LoadBalancers is higher '
-                           'than new limits.')
+LOG = getLogger("Connector")
 
 
 class ConnectorConfig(Config):
-    """Extention of CloudBlue connect config model"""
+    """Extension of CloudBlue connect config model"""
 
     @staticmethod
-    def _read_config_value(config, key, default=_MISSING):
-        if default is _MISSING:
+    def _read_config_value(config, key, default=MISSING):
+        if default is MISSING:
             if key not in config:
-                raise ValueError(
-                    '"{}" not found in the config file'.format(key))
+                raise ValueError('"{}" not found in the config file'.format(key))
         val = config.get(key, default)
         if isinstance(val, dict):
+            if default is not MISSING:
+                for k in default:
+                    if k not in val:
+                        val[k] = default[k]
             return val
-        return val.encode('utf-8') if not isinstance(val, str) else val
+        return val.encode('utf-8') if not isinstance(val, (str, list)) else val
 
     def __init__(self, **kwargs):
         filename = kwargs.get('file')
         if filename and not os.path.exists(filename):
             LOG.error('Configuration file "%s" not found.', filename)
             sys.exit(1)
-        super(ConnectorConfig, self).__init__(**kwargs)
 
-        # read addintional infrastructure parameters
         if filename:
+            # read infrastructure parameters
             with open(filename) as config_file:
                 config = json.loads(config_file.read())
-            self._infra_keystone_endpoint = self._read_config_value(
-                config, 'infraKeystoneEndpoint')
-            self._infra_user = self._read_config_value(
-                config, 'infraUser')
-            self._infra_password = self._read_config_value(
-                config, 'infraPassword')
-            self._infra_project = self._read_config_value(
-                config, 'infraProject', 'admin')
-            self._infra_domain = self._read_config_value(
-                config, 'inrfaDomain', 'Default')
-            self._templates = self._read_config_value(
-                config, 'templates', {})
+            self._infra_keystone_endpoint = self._read_config_value(config, 'infraKeystoneEndpoint')
+            self._infra_user = self._read_config_value(config, 'infraUser')
+            self._infra_password = self._read_config_value(config, 'infraPassword')
+            self._infra_project = self._read_config_value(config, 'infraProject', 'admin')
+            self._infra_domain = self._read_config_value(config, 'inrfaDomain', 'Default')
+            self._templates = self._read_config_value(config, 'templates', {})
+            self._misc = self._read_config_value(
+                config, 'misc', {
+                    'domainCreation': True,
+                    'imageUpload': True,
+                    'hidePasswordsInLog': True
+                })
+            # prepare data for connect
+            api_url = self._read_config_value(config, 'apiEndpoint')
+            api_key = self._read_config_value(config, 'apiKey')
+            products = self._read_config_value(config, 'products')
+            if kwargs.get('report_usage', False):
+                products = self._read_config_value(config, 'report_usage')
+            products = [products] if isinstance(products, str) and products else products or []
+            super(ConnectorConfig, self).__init__(api_url=api_url, api_key=api_key, products=products)
+        else:
+            LOG.error('Configuration file not specified')
+            sys.exit(1)
 
     @property
     def infra_keystone_endpoint(self):
@@ -265,45 +110,13 @@ class ConnectorConfig(Config):
     def infra_password(self):
         return self._infra_password
 
+    @property
+    def misc(self):
+        return copy.deepcopy(self._misc)
+
 
 class ConnectorMixin(object):
-    def _log_exception(f):
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            try:
-                return f(*args, **kwargs)
-            except Exception:
-                LOG.exception('XXX')
-        return wrapper
-
-    def _once(f):
-        """Cache result of a function first call"""
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            rv = getattr(f, 'rv', _MISSING)
-            if rv is _MISSING:
-                f.rv = f(*args, **kwargs)
-            return f.rv
-        return wrapper
-
-    def _memoize(f):
-        """Cache result of a function call with parameters"""
-        f.memory = {}
-        @functools.wraps(f)
-        def wrapper(self, *args, **kwargs):
-            x = None
-            try:
-                x = tuple(list(args) + [])
-            except TypeError:
-                LOG.exception('XXX')
-            rv = f.memory.get(x, _MISSING)
-            if rv is _MISSING:
-                rv = f(self, *args, **kwargs)
-                f.memory[x] = rv
-            return rv
-        return wrapper
-
-    @_memoize
+    @memoize
     def get_answer(self, product, answer):
         """Get template object specified in the Config"""
         c = Config.get_instance()
@@ -316,7 +129,7 @@ class ConnectorMixin(object):
         return ActivationTileResponse(line)
 
     @property
-    @_once
+    @once
     def keystone_session(self):
         """Create KeystoneSession object using params in the Config"""
 
@@ -333,7 +146,7 @@ class ConnectorMixin(object):
         return KeystoneSession(auth=auth, verify=False)
 
     @property
-    @_once
+    @once
     def keystone_client(self):
         """Create KeystoneClient object using KeystoneSession"""
 
@@ -345,7 +158,7 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
     def cinder_client(self):
         return CinderClient(
             version='3.45',
@@ -354,7 +167,15 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
+    def glance_client(self):
+        return GlanceClient(
+            version='2',
+            session=self.keystone_session
+        )
+
+    @property
+    @once
     def gnocchi_client(self):
         return GnocchiClient(
             version='1',
@@ -363,7 +184,7 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
     def nova_client(self):
         return NovaClient(
             version='2.60',
@@ -372,7 +193,7 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
     def neutron_client(self):
         return NeutronClient(
             session=self.keystone_session,
@@ -380,11 +201,10 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
     def octavia_client(self):
         try:
-            endpoint = self.keystone_session.get_endpoint(
-                service_type='load-balancer', interface='public')
+            endpoint = self.keystone_session.get_endpoint(service_type='load-balancer', interface='public')
         except KeystoneEndpointNotFound:
             endpoint = None
 
@@ -398,11 +218,10 @@ class ConnectorMixin(object):
         )
 
     @property
-    @_once
+    @once
     def magnum_client(self):
         try:
-            endpoint = self.keystone_session.get_endpoint(
-                service_type='container-infra', interface='public')
+            endpoint = self.keystone_session.get_endpoint(service_type='container-infra', interface='public')
         except KeystoneEndpointNotFound:
             endpoint = None
 
@@ -415,35 +234,53 @@ class ConnectorMixin(object):
             connect_retries=2,
         )
 
-    @_memoize
+    @memoize
     def find_role(self, name):
         """Find user role by name"""
 
         return self.keystone_client.roles.find(name=name)
 
-    @_log_exception
-    def create_or_update_domain(self, name, description=None, enabled=True,
-                                domain_id=None):
+    @log_exception
+    @memoize
+    def get_images_list(self, os_type=None):
+        images = []
+        for image in itertools.chain(self.glance_client.images.list(),
+                                     self.glance_client.images.list(filters={"os_hidden": "True"})):
+            if image.get("os_type") and image["os_type"] == os_type:
+                images.append(image)
+
+        LOG.debug("images of type '%s': %s", os_type, images)
+
+        return images
+
+    @log_exception
+    def get_existing_domain(self, partner_id=None):
+        domains = self.keystone_client.domains.list()
+        for domain in domains:
+            if domain.description == partner_id:
+                return self.keystone_client.domains.get(domain.id)
+        return None
+
+    @log_exception
+    def create_or_update_domain(self, name, description=None, enabled=True, domain_id=None):
         domain = None
         if domain_id:
             try:
                 domain = self.keystone_client.domains.get(domain_id)
             except KeystoneNotFound:
-                # project was removed
+                # domain was removed
                 pass
         if domain is None:
             domains = self.keystone_client.domains.list(name=name)
             domain = domains[0] if domains else None
         if domain is None:
             try:
-                return self.keystone_client.domains.create(
-                    name, description=description, enabled=enabled)
+                return self.keystone_client.domains.create(name, description=description, enabled=enabled)
             except KeystoneConflict:
                 # race protection
                 domains = self.keystone_client.domains.list(name=name)
                 domain = domains[0] if domains else None
-        return self.keystone_client.domains.update(
-            domain, name=name, description=description, enabled=enabled)
+        return self.keystone_client.domains.update(domain, name=name, description=description, enabled=enabled)
 
     def create_project(self, name, domain, description=None,
                        enabled=True, project_id=None):
@@ -454,8 +291,7 @@ class ConnectorMixin(object):
                 # project was removed
                 return
         try:
-            report_time = datetime.utcnow().replace(
-                hour=0, minute=0, second=0, microsecond=0)
+            report_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             return self.keystone_client.projects.create(
                 name, domain, description=description, enabled=enabled,
                 last_usage_report_time=report_time.isoformat(),
@@ -478,9 +314,7 @@ class ConnectorMixin(object):
                 name=name, domain=domain, password=password,
                 description=description, enabled=enabled)
         except (KeystoneConflict, KeystoneBadRequest):
-            LOG.exception('Something wrong with the requested '
-                          'name or password')
-
+            LOG.exception('Something wrong with the requested name or password')
 
     def assign_user_roles(self, user, project, roles):
         roles = [self.find_role(role).id for role in roles]
@@ -508,10 +342,10 @@ class ConnectorMixin(object):
             except KeystoneNotFound:
                 pass
 
-    @_log_exception
+    @log_exception
     def configure_storage_quotas(self, project_id, quotas):
         current_quotas = self.cinder_client.quotas.get(project_id)
-        gigabytes_quotas = {key:0 for key in current_quotas.to_dict().keys()
+        gigabytes_quotas = {key: 0 for key in current_quotas.to_dict().keys()
                             if key.startswith('gigabytes_')}
 
         total = 0
@@ -528,15 +362,15 @@ class ConnectorMixin(object):
         except CinderBadRequest:
             return ""
 
-    @_log_exception
+    @log_exception
     def configure_compute_quotas(self, project_id, quotas):
         self.nova_client.quotas.update(project_id, **quotas)
 
-    @_log_exception
+    @log_exception
     def configure_network_quotas(self, project_id, quotas):
         self.neutron_client.update_quota(project_id, body=dict(quota=quotas))
 
-    @_log_exception
+    @log_exception
     def configure_lbaas_quotas(self, project_id, quotas):
         clnt = self.octavia_client
         if not clnt:
@@ -550,27 +384,21 @@ class ConnectorMixin(object):
         last_report_time = self._get_report_time(
             request, project, 'last_usage_report_time')
         # last report time or today
-        return (last_report_time, confirmed) if last_report_time else \
-            (datetime.utcnow().replace(
-                hour=0, minute=0, second=0,
-                microsecond=0), None)
+        return (last_report_time, confirmed) if last_report_time \
+            else (datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0), None)
 
     def _get_report_time(self, request, project, field):
         project_dict = project.to_dict()
         time_str = project_dict.get(field)
         report_time = None
         try:
-            report_time = \
-                dateutil.parser.parse(time_str) if time_str else None
+            report_time = dateutil.parser.parse(time_str) if time_str else None
         except Exception:
-            LOG.exception('%s-%s: unable to parse "%s"',
-                          request.id, project.id, time_str)
+            LOG.exception('%s-%s: unable to parse "%s"', request.id, project.id, time_str)
         return report_time
 
     def get_stop_report_time(self, request, project):
-        return self._get_report_time(
-            request, project, 'stop_usage_report_time')
+        return self._get_report_time(request, project, 'stop_usage_report_time')
 
     def get_start_report_time(self, request, project):
-        return self._get_report_time(
-            request, project, 'start_usage_report_time')
+        return self._get_report_time(request, project, 'start_usage_report_time')
