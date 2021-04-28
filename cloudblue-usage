@@ -1,17 +1,17 @@
 #!/usr/bin/python
-#******************************************************************************
-# Copyright (c) 2020, Virtuozzo International GmbH.
+# ******************************************************************************
+# Copyright (c) 2020-2021, Virtuozzo International GmbH.
 # This source code is distributed under MIT software license.
-#******************************************************************************
+# ******************************************************************************
 
 import sys
 
-import cloudblue_connector as connector
+import cloudblue_connector.runners as runners
 
 
 if __name__ == '__main__':
     project_id = None
     if len(sys.argv) > 1:
         project_id = sys.argv[1]
-    rv = connector.process_usage(project_id=project_id)
+    rv = runners.process_usage(project_id=project_id)
     print(rv)

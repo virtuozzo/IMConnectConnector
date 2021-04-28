@@ -1,0 +1,34 @@
+{
+    "logging": {
+        "version": 1,
+        "disable_existing_loggers": false,
+        "formatters": {
+            "single-line": {
+                "class": "logging.Formatter",
+                "format": "%(levelname)-6s; %(asctime)s; %(name)-6s; %(module)s:%(funcName)s:line-%(lineno)d: %(message)s"
+            }
+        },
+        "handlers": {
+            "console": {
+                "level": "DEBUG",
+                "class": "logging.StreamHandler",
+                "formatter": "single-line",
+                "stream": "ext://sys.stdout"
+            },
+            "file_daily": {
+                "level": "DEBUG",
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "formatter": "single-line",
+                "filename": "/var/log/cloudblue-connector/connector.log",
+                "when": "D",
+                "interval": 1,
+                "backupCount": 30,
+                "encoding": "utf-8"
+            }
+        },
+        "root": {
+            "handlers": ["file_daily", "console"],
+            "level": "DEBUG"
+        }
+    }
+}
