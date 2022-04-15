@@ -7,25 +7,13 @@ from datetime import timedelta
 
 from gnocchiclient.exceptions import BadRequest as GnocchiBadRequest
 
-from cloudblue_connector.consumption.base import Consumption
+from cloudblue_connector.consumption.base import Consumption, AggregatedConsumption
 
 
-class FloatingIP(Consumption):
-    def collect_consumption(self, project, start_time, end_time):
-        try:
-            measures = self.gnocchi_client.aggregates.fetch(
-                operations="(aggregate count (metric ip.floating mean))",
-                resource_type="network", search="project_id={}".format(project.id),
-                start=start_time, stop=end_time
-            ).get('measures', {}).get('aggregated', [])
-        except GnocchiBadRequest:
-            # means metric NotFound
-            measures = []
-
-        # full value is only every hour
-        measures = [m for m in measures if m[0].minute == 0]
-        values = [m[-1] for m in measures]
-        return int(sum(values))
+class FloatingIP(AggregatedConsumption):
+    resource_type = 'network'
+    operation = '(aggregate count (metric ip.floating mean))'
+    hourly = False
 
 
 class OutgoingTraffic(Consumption):

@@ -57,6 +57,10 @@ class FakeUser(FakeBaseObject):
     pass
 
 
+class FakeServer(FakeBaseObject):
+    pass
+
+
 def gen_fake_by_schema(schema, inners=None, defaults=None):
     """
     Generate fake dict by schema for responses content/data.

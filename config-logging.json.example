@@ -20,14 +20,29 @@
                 "class": "logging.handlers.TimedRotatingFileHandler",
                 "formatter": "single-line",
                 "filename": "/var/log/cloudblue-connector/connector.log",
-                "when": "D",
-                "interval": 1,
+                "when": "MIDNIGHT",
                 "backupCount": 30,
                 "encoding": "utf-8"
+            },
+            "file_weekly_errors": {
+                "level": "ERROR",
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "formatter": "single-line",
+                "filename": "/var/log/cloudblue-connector/connector_errors.log",
+                "when": "W0",
+                "backupCount": 5,
+                "encoding": "utf-8"
+            },
+            "syslog": {
+                "level": "ERROR",
+                "class": "logging.handlers.SysLogHandler",
+                "formatter": "single-line",
+                "address": ["localhost", 514],
+                "facility": 1
             }
         },
         "root": {
-            "handlers": ["file_daily", "console"],
+            "handlers": ["file_daily", "file_weekly_errors", "console"],
             "level": "DEBUG"
         }
     }

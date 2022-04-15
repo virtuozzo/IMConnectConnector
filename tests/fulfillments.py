@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 
 import pytest
+from connect.config import Config as CloudblueConfig
 from connect.exceptions import SkipRequest, FailRequest, InquireRequest
 from connect.models import ActivationTemplateResponse, ActivationTileResponse
 from connect.models.schemas import AssetRequestSchema, ConversationSchema, ConversationMessageSchema, TierConfigSchema
@@ -16,9 +17,10 @@ from mock import patch, MagicMock
 from cloudblue_connector.automation import FulfillmentAutomation
 from cloudblue_connector.connector import ConnectorConfig
 from cloudblue_connector.runners import process_fulfillment
-from .data import MAIN_DEFAULTS, LIMIT_ITEMS
+from .data import MAIN_DEFAULTS, LIMIT_ITEMS, ASSET_PARAMS_ITEMS
 from .helpers.fake_methods import make_fake_apimethod, process_request_wrapper, make_value_type_checker
-from .helpers.fake_objects import gen_fake_by_schema, FakeRole, FakeQuotas, FakeDomain, FakeProject, FakeUser
+from .helpers.fake_objects import gen_fake_by_schema, FakeRole, FakeQuotas, FakeDomain, FakeProject,\
+    FakeUser, FakeServer
 from .helpers.mocks import OpenstackClientMock
 
 LOG = logging.getLogger(__name__)
@@ -67,6 +69,13 @@ def _base_test_process_fulfillment(additional_defaults, additional_mock_data, ot
     if 'keystone_mock' in additional_mock_data:
         keystone_mock_data.update(additional_mock_data.get('keystone_mock'))
 
+    nova_mock_data = {
+        'quotas.get': FakeQuotas(),
+        'quotas.update': FakeQuotas(),
+    }
+    if 'nova_mock' in additional_mock_data:
+        nova_mock_data.update(additional_mock_data.get('nova_mock'))
+
     with patch(
         'cloudblue_connector.runners.ConnectorConfig',
         return_value=config
@@ -87,10 +96,7 @@ def _base_test_process_fulfillment(additional_defaults, additional_mock_data, ot
         ))
     ), patch(
         'cloudblue_connector.connector.NovaClient',
-        return_value=OpenstackClientMock('NovaClient', (
-            ('quotas.get', FakeQuotas()),
-            ('quotas.update', FakeQuotas()),
-        ))
+        return_value=OpenstackClientMock('NovaClient', nova_mock_data)
     ), patch(
         'cloudblue_connector.connector.MagnumClient',
         return_value=OpenstackClientMock('MagnumClient', (
@@ -184,10 +190,43 @@ def _base_test_process_fulfillment(additional_defaults, additional_mock_data, ot
     )
 )
 def test_process_fulfillment_payg(additional_defaults, additional_mock_data, others_kwargs):
+    # Clean global cloudblue config instance
+    CloudblueConfig._instance = None
     # For PAYG model need to modify defaults in Config
     config = ConnectorConfig(file='config.json.example', report_usage=False)
     config._misc['domainCreation'] = False
     config._misc['imageUpload'] = False
+    _base_test_process_fulfillment(additional_defaults, additional_mock_data, others_kwargs, config)
+
+
+@pytest.mark.parametrize(
+    "additional_defaults,additional_mock_data,config_defaults,others_kwargs",
+    (
+        # test mode enabled, request marketplace id doesn't match config value
+        (
+            {('type',): 'purchase', ('asset', 'items',): LIMIT_ITEMS,
+             ('params',): [{'value': 'TestDomain', 'id': 'partner_id'}]},
+            {},
+            {'testMarketplaceId': 'MP-12345', 'testMode': True},
+            {'expected_exception': SkipRequest}
+        ),
+        # test mode disabled, request marketplace id does match config value
+        (
+            {('type',): 'purchase', ('asset', 'items',): LIMIT_ITEMS,
+             ('params',): [{'value': 'TestDomain', 'id': 'partner_id'}]},
+            {},
+            {'testMarketplaceId': 'TestId', 'testMode': False},
+            {'expected_exception': SkipRequest}
+        ),
+    )
+)
+def test_process_fulfillment_test_mode(additional_defaults, additional_mock_data, config_defaults, others_kwargs):
+    # Clean global cloudblue config instance
+    CloudblueConfig._instance = None
+    # For test mode need to modify defaults in Config
+    config = ConnectorConfig(file='config.json.example', report_usage=False)
+    config._misc['testMarketplaceId'] = config_defaults.get('testMarketplaceId')
+    config._misc['testMode'] = config_defaults.get('testMode')
     _base_test_process_fulfillment(additional_defaults, additional_mock_data, others_kwargs, config)
 
 
@@ -256,12 +295,24 @@ def test_process_fulfillment_payg(additional_defaults, additional_mock_data, oth
         ),
         (
             {('type',): 'suspend', ('asset', 'items',): LIMIT_ITEMS},
-            {},
+            {'nova_mock': {'servers.stop': None, 'servers.shelve': None}},
             {'expected_value_checker': make_value_type_checker(ActivationTileResponse)}
         ),
         (
-            {('type',): 'cancel', ('asset', 'items',): LIMIT_ITEMS},
-            {},
+            {('type',): 'cancel', ('asset', 'items',): LIMIT_ITEMS,
+             ('params',): [{'id': 'partner_id', 'value': 'TestDomain'}],
+             ('asset', 'params',): ASSET_PARAMS_ITEMS},
+            {'keystone_mock': {
+                'users.update': FakeUser(id='TestProjectUser'),
+                'projects.update': None},
+             'nova_mock': {
+                'servers.list': [
+                    FakeServer(status='SHELVED', id='TestServerId1', name='TestServerName1'),
+                    FakeServer(status='ACTIVE', id='TestServerId2', name='TestServerName2')],
+                'servers.update': None,
+                'servers.stop': None,
+                'servers.shelve': None,
+                }},
             {'expected_value_checker': make_value_type_checker(ActivationTileResponse)}
         ),
         (
@@ -272,5 +323,7 @@ def test_process_fulfillment_payg(additional_defaults, additional_mock_data, oth
     )
 )
 def test_process_fulfillment(additional_defaults, additional_mock_data, others_kwargs):
+    # Clean global cloudblue config instance
+    CloudblueConfig._instance = None
     config = ConnectorConfig(file='config.json.example', report_usage=False)
     _base_test_process_fulfillment(additional_defaults, additional_mock_data, others_kwargs, config)

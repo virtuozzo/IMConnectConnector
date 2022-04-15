@@ -50,7 +50,7 @@ class ConnectorConfig(Config):
                     if k not in val:
                         val[k] = default[k]
             return val
-        return val.encode('utf-8') if not isinstance(val, (str, list)) else val
+        return val.encode('utf-8') if not isinstance(val, (str, list, int)) else val
 
     def __init__(self, **kwargs):
         filename = kwargs.get('file')
@@ -66,14 +66,17 @@ class ConnectorConfig(Config):
             self._infra_user = self._read_config_value(config, 'infraUser')
             self._infra_password = self._read_config_value(config, 'infraPassword')
             self._infra_project = self._read_config_value(config, 'infraProject', 'admin')
-            self._infra_domain = self._read_config_value(config, 'inrfaDomain', 'Default')
+            self._infra_domain = self._read_config_value(config, 'infraDomain', 'Default')
             self._templates = self._read_config_value(config, 'templates', {})
             self._misc = self._read_config_value(
                 config, 'misc', {
                     'domainCreation': True,
                     'imageUpload': True,
-                    'hidePasswordsInLog': True
+                    'hidePasswordsInLog': True,
+                    'testMarketplaceId': None,
+                    'testMode': False
                 })
+            self._data_retention_period = int(self._read_config_value(config, 'dataRetentionPeriod', 15))
             # prepare data for connect
             api_url = self._read_config_value(config, 'apiEndpoint')
             api_key = self._read_config_value(config, 'apiKey')
@@ -113,6 +116,10 @@ class ConnectorConfig(Config):
     @property
     def misc(self):
         return copy.deepcopy(self._misc)
+
+    @property
+    def data_retention_period(self):
+        return self._data_retention_period
 
 
 class ConnectorMixin(object):
@@ -329,7 +336,16 @@ class ConnectorMixin(object):
         for role in roles:
             self.keystone_client.roles.grant(role, user=user, project=project)
 
-    def suspend_project(self, request, domain_id, project_id, user_id):
+    def suspend_user(self, user_id, description=None):
+        if user_id:
+            try:
+                self.keystone_client.users.update(user_id, enabled=False, description=description)
+            except KeystoneNotFound:
+                pass
+        else:
+            LOG.error('User id not specified')
+
+    def suspend_project(self, request, project_id, description=None):
         if project_id:
             try:
                 report_time = datetime.utcnow().replace(microsecond=0)
@@ -337,10 +353,47 @@ class ConnectorMixin(object):
                 if request.asset.status != 'suspended':
                     params['stop_usage_report_time'] = report_time.isoformat()
                 self.keystone_client.projects.update(
-                    project_id, enabled=False,
+                    project_id, enabled=False, description=description,
                     **params)
             except KeystoneNotFound:
                 pass
+        else:
+            LOG.error('Project id not specified')
+
+    def operate_servers(self, project_id, action, description=None):
+        actions = {
+            'stop': {
+                'statuses': ['ACTIVE', 'ERROR'],
+                'method': self.nova_client.servers.stop
+            },
+            'shelve': {
+                'statuses': ['ACTIVE', 'SHUTOFF', 'STOPPED', 'PAUSED', 'SUSPENDED'],
+                'method': self.nova_client.servers.shelve
+            }
+        }
+
+        if project_id is None:
+            LOG.error("Project id not specified")
+            return
+        if actions.get(action, None) is None:
+            LOG.error("Unknown action '%s'", action)
+            return
+
+        servers_list = self.nova_client.servers.\
+            list(search_opts={'all_tenants': True, 'project_id': project_id})
+
+        for server in servers_list:
+            if server.status in actions.get(action)['statuses']:
+                try:
+                    if description:
+                        self.nova_client.servers.update(server, description=description)
+                    actions.get(action)['method'](server)
+                except Exception:
+                    LOG.exception("Exception raised while attempt to %s server '%s' (%s)",
+                                  action, server.id, server.name)
+            else:
+                LOG.warning("Cannot %s server '%s' (%s) because it is in '%s' status",
+                            action, server.id, server.name, server.status)
 
     @log_exception
     def configure_storage_quotas(self, project_id, quotas):
@@ -402,3 +455,15 @@ class ConnectorMixin(object):
 
     def get_start_report_time(self, request, project):
         return self._get_report_time(request, project, 'start_usage_report_time')
+
+    def test_marketplace_requests_filter(self, conf, request_id, marketplace):
+        if conf.misc['testMarketplaceId']:
+            if conf.misc['testMode'] and marketplace.id != conf.misc['testMarketplaceId']:
+                LOG.warning('Skipping request %s because test mode is enabled '
+                            'and request came not from test marketplace', request_id)
+                return True
+            if not conf.misc['testMode'] and marketplace.id == conf.misc['testMarketplaceId']:
+                LOG.warning('Skipping request %s because test mode is disabled '
+                            'and request came from test marketplace', request_id)
+                return True
+        return False
