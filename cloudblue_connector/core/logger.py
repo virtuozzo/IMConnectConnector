@@ -47,7 +47,7 @@ class PasswordFilter(logging.Filter):
 
     type_pattern = re.compile(r'"type":\s?"password"', re.MULTILINE)
     password_patterns = [
-        re.compile(r'^Function\s`.*?`\sreturn:\s\(u\'(.*)\',\s\d+\)$', re.MULTILINE + re.DOTALL),
+        re.compile(r'^Function\s`.*?`\sreturn:\s\(u?\'(.*)\',\s\d+\)$', re.MULTILINE + re.DOTALL),
         re.compile(r'^Function\s`.*?`\sreturn:\s(.*)$', re.MULTILINE + re.DOTALL),
     ]
 
@@ -69,6 +69,7 @@ class PasswordFilter(logging.Filter):
             return True
 
         try:
+            raw_json = raw_json.replace("\\x", "\\u00")
             payload = json.loads(raw_json)
             if not isinstance(payload, list):
                 payload = [payload]

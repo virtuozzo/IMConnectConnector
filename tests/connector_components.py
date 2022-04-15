@@ -8,7 +8,7 @@ import pytest
 
 from cloudblue_connector.connector import ConnectorConfig
 from cloudblue_connector.core.logger import PasswordFilter
-from .data import TESTS_DATA
+from .data import LOGS_DATA
 
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
@@ -34,9 +34,9 @@ def test_logger_filtering(caplog):
     ext_logger = logging.getLogger('tests.connector_components')
     ext_logger.addFilter(PasswordFilter())
 
-    for m in TESTS_DATA['log_messages']:
+    for m in LOGS_DATA['log_messages']:
         LOG.info(m)
 
     for record in caplog.records:
-        if any(record.message.find(p) != -1 for p in TESTS_DATA['log_passwords']):
+        if any(record.message.find(p) != -1 for p in LOGS_DATA['log_passwords']):
             pytest.fail("Passwords found in captured log records")

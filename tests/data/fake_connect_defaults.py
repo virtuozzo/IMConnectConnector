@@ -2,11 +2,7 @@
 # Copyright (c) 2020-2021, Virtuozzo International GmbH.
 # This source code is distributed under MIT software license.
 # ******************************************************************************
-import json
 from datetime import datetime, timedelta
-
-from .log_records import log_messages, log_passwords
-from .windows_vms import windows_vms, images_list
 
 SUPPORTED_DEFAULTS_KEY_TYPE = (str,)
 
@@ -47,15 +43,15 @@ LIMIT_ITEMS = [
         'K8S_limit')
 ]
 
-TESTS_DATA = {
-    'windows_vms': windows_vms,
-    'images_list': images_list,
-    'log_messages': log_messages,
-    'log_passwords': log_passwords
-}
-with open('tests/data/traffic.json') as json_file:
-    data = json.load(json_file)
-    TESTS_DATA['traffic'] = data
+ASSET_PARAMS_ITEMS = [
+    {'id': 'domain_id', 'value': 'TestDomainId'},
+    {'id': 'domain_name', 'value': 'TestDomainName'},
+    {'id': 'password', 'value': 'Password'},
+    {'id': 'project_id', 'value': 'TestProjectId'},
+    {'id': 'project', 'value': 'TestProjectName'},
+    {'id': 'user_id', 'value': 'TestProjectUserId'},
+    {'id': 'user', 'value': 'TestProjectUser'},
+]
 
 __all__ = [
     'SUPPORTED_DEFAULTS_KEY_TYPE',
@@ -64,5 +60,5 @@ __all__ = [
     'USAGE_DEFAULTS',
     'PAYG_ADDITIONAL_USAGE_DEFAULTS',
     'LIMIT_ITEMS',
-    'TESTS_DATA'
+    'ASSET_PARAMS_ITEMS',
 ]

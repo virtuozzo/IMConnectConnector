@@ -8,13 +8,16 @@ import logging
 from datetime import datetime, timedelta
 
 import pytest
+from connect.config import Config as CloudblueConfig
 from connect.models.schemas import UsageFileSchema, AssetSchema
 from mock import patch, MagicMock
 
 from cloudblue_connector.automation.usage import UsageAutomation
 from cloudblue_connector.runners import ConnectorConfig, process_usage
-from .data import MAIN_DEFAULTS, PROJECT_DEFAULTS, USAGE_DEFAULTS, PAYG_ADDITIONAL_USAGE_DEFAULTS, TESTS_DATA
-from .helpers.fake_methods import make_fake_apimethod, process_request_wrapper
+from .data import MAIN_DEFAULTS, PROJECT_DEFAULTS, USAGE_DEFAULTS, PAYG_ADDITIONAL_USAGE_DEFAULTS,\
+    GNOCCHI_TESTS_DATA, GNOCCHI_MOCK_DATA
+from .helpers.fake_methods import make_fake_apimethod, process_request_wrapper, submit_usage_wrapper,\
+    make_usage_values_checker
 from .helpers.fake_objects import FakeProject, gen_fake_by_schema
 from .helpers.mocks import OpenstackClientMock, OpenstackClientParametrizedMock
 
@@ -33,6 +36,8 @@ def _base_test_process_usage(
         usage_files_get_cnts=1,
         expected_process_value=None,
         expected_process_exception=None,
+        expected_value_checker=None,
+        patched_config=None
 ):
     defaults_ = copy.deepcopy(MAIN_DEFAULTS)
     defaults_.update(USAGE_DEFAULTS)
@@ -88,12 +93,12 @@ def _base_test_process_usage(
     keystone_client_mock = OpenstackClientMock('KeystoneClient', keystone_mock_data_tuples)
 
     # GnocchiClient
-    gnocchi_mock_data = {
-        'metric.aggregation': {(): [{'measures': []}]},
-        'aggregates.fetch': {(): {'measures': {}}},
-    }
+    gnocchi_mock_data = GNOCCHI_MOCK_DATA.copy()
     if additional_gnocchi_mock_data:
-        gnocchi_mock_data.update(additional_gnocchi_mock_data)
+        for key in additional_gnocchi_mock_data.keys():
+            if gnocchi_mock_data.get(key) is None:
+                gnocchi_mock_data[key] = {}
+            gnocchi_mock_data[key].update(additional_gnocchi_mock_data[key])
     gnocchi_client_mock = OpenstackClientParametrizedMock('GnocchiClient', gnocchi_mock_data)
 
     # GlanceClient
@@ -104,9 +109,11 @@ def _base_test_process_usage(
         glance_mock_data_tuples += additional_glance_mock_tuples
     glance_client_mock = OpenstackClientMock('GlanceClient', glance_mock_data_tuples)
 
+    config = patched_config or ConnectorConfig(file='config.json.example', report_usage=True)
+
     with patch(
         'cloudblue_connector.runners.ConnectorConfig',
-        return_value=ConnectorConfig(file='config.json.example', report_usage=True)
+        return_value=config
     ), patch(
         'cloudblue_connector.connector.KeystoneClient',
         return_value=keystone_client_mock
@@ -132,48 +139,72 @@ def _base_test_process_usage(
             expected_exception=expected_process_exception,
             expected_value_checker=expected_process_value
         )
+    ), patch(
+        'cloudblue_connector.runners.UsageAutomation.submit_usage',
+        new=submit_usage_wrapper(
+            UsageAutomation.submit_usage,
+            expected_value_checker
+        )
     ), patch('cloudblue_connector.runners.datetime') as mock_dt:
         mock_dt.utcnow = MagicMock(return_value=datetime(2020, 6, 29, 17, 47, 38, 787420))
         process_usage()
 
 
 @pytest.mark.parametrize(
-    "additional_glance_mock_tuples,additional_gnocchi_mock_data",
+    "additional_glance_mock_tuples,additional_gnocchi_mock_data,expected_value_checker,config_defaults",
     (
         # Windows VMS cpu consumption data
         (
-            (('images.list', TESTS_DATA['images_list']),),
+            (('images.list', GNOCCHI_TESTS_DATA['images_list']),),
             {'resource.search': {
-                (('resource_type', 'instance'),): TESTS_DATA['windows_vms'],
-                (('resource_type', 'instance_network_interface'),): []
-            }}
+                (): {
+                    (('resource_type', 'instance'),): GNOCCHI_TESTS_DATA['windows_vms'],
+                    (('resource_type', 'instance_network_interface'),): []
+                }
+            }},
+            make_usage_values_checker(
+                {
+                    'CPU_consumption': 60, 'Storage_consumption': 576, 'RAM_consumption': 12,
+                    'Floating_IP_consumption': 24, 'LB_consumption': 36, 'K8S_consumption': 84,
+                    'Win_VM_consumption': 374, 'Outgoing_Traffic_consumption': 0,
+                }
+            ),
+            {'report_zero_usage': []}
         ),
-        # Traffic consumption data
+        # Traffic consumption data, Zero usage for Storage and Floating IP
         (
-            (),
+            None,
             {'resource.search': {
-                (('resource_type', 'instance'),): [
-                    {"display_name": "vm1",
-                     "created_at": (datetime.utcnow() - timedelta(days=5)).strftime('%Y-%m-%d') + "T17:06:26+00:00",
-                     "deleted_at": None}],
-                (('resource_type', 'instance_network_interface'),): [
-                    {'id': '11111111-1111-1111-1111-111111111113'}]},
-             'aggregates.fetch': {
-                (): {'measures': {}},
-                (('search', 'id=11111111-1111-1111-1111-111111111113'),):
-                    {'measures':
-                     {'11111111-1111-1111-1111-111111111113':
-                      {'network.outgoing.bytes': {'mean': TESTS_DATA['traffic']}}}}
-            }}
-        )
+                (): {
+                    (('resource_type', 'instance'),): GNOCCHI_TESTS_DATA['single_vm'],
+                    (('resource_type', 'instance_network_interface'),): GNOCCHI_TESTS_DATA['instance_network_interface']
+                },
+            }},
+            make_usage_values_checker(
+                {
+                    'CPU_consumption': 60, 'Storage_consumption': 0, 'RAM_consumption': 12,
+                    'Floating_IP_consumption': 0, 'LB_consumption': 36, 'K8S_consumption': 84,
+                    'Win_VM_consumption': 0, 'Outgoing_Traffic_consumption': 0.4761,
+                }
+            ),
+            {'report_zero_usage': ['Storage_consumption', 'Floating_IP_consumption']},
+        ),
     )
 )
-def test_process_usage_payg(additional_glance_mock_tuples, additional_gnocchi_mock_data):
+def test_process_usage_payg(additional_glance_mock_tuples, additional_gnocchi_mock_data, expected_value_checker, config_defaults):
+    # Clean global cloudblue config instance
+    CloudblueConfig._instance = None
+    # For test mode need to modify defaults in Config
+    config = ConnectorConfig(file='config.json.example', report_usage=True)
+    config._misc['report_zero_usage'] = config_defaults.get('report_zero_usage')
+
     _base_test_process_usage(
         additional_keystone_mock_tuples=(('projects.get', FakeProject(**PROJECT_DEFAULTS)),),
         additional_defaults=PAYG_ADDITIONAL_USAGE_DEFAULTS,
         additional_glance_mock_tuples=additional_glance_mock_tuples,
-        additional_gnocchi_mock_data=additional_gnocchi_mock_data
+        additional_gnocchi_mock_data=additional_gnocchi_mock_data,
+        expected_value_checker=expected_value_checker,
+        patched_config=config
     )
 
 
@@ -195,6 +226,27 @@ def test_process_usage_payg(additional_glance_mock_tuples, additional_gnocchi_mo
 def test_process_usage(additional_keystone_mock_tuples):
     _base_test_process_usage(
         additional_keystone_mock_tuples=additional_keystone_mock_tuples
+    )
+
+
+@pytest.mark.parametrize(
+    "config_defaults",
+    (
+        # test mode enabled, request marketplace id doesn't match config value
+        {'testMarketplaceId': 'MP-12345', 'testMode': True},
+        # test mode disabled, request marketplace id does match config value
+        {'testMarketplaceId': 'TestId', 'testMode': False},
+    )
+)
+def test_process_usage_test_mode(config_defaults):
+    # Clean global cloudblue config instance
+    CloudblueConfig._instance = None
+    # For test mode need to modify defaults in Config
+    config = ConnectorConfig(file='config.json.example', report_usage=True)
+    config._misc['testMarketplaceId'] = config_defaults.get('testMarketplaceId')
+    config._misc['testMode'] = config_defaults.get('testMode')
+    _base_test_process_usage(
+        patched_config=config
     )
 
 

@@ -5,7 +5,7 @@
 
 import random
 import string
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from connect import resources
 from connect.config import Config
@@ -62,6 +62,9 @@ class FulfillmentAutomation(resources.FulfillmentAutomation, ConnectorMixin):
             self.logger.info('Skipping request %s because it needs migration.', request.id)
             raise SkipRequest()
 
+        if self.test_marketplace_requests_filter(conf, request.id, request.asset.marketplace):
+            raise SkipRequest()
+
         param_partner_id = None
         if not conf.misc['domainCreation']:
             self.logger.info('Request "%s" needs domain that created manually. '
@@ -86,6 +89,7 @@ class FulfillmentAutomation(resources.FulfillmentAutomation, ConnectorMixin):
         param_project_id = params.get('project_id')
         param_user_id = params.get('user_id')
 
+        self.logger.info("Request type: %s", request.type)
         self.logger.info("param_partner_id: %s, param_domain_name: %s, param_domain_id: %s, "
                          "param_project_id: %s, param_user_id: %s",
                          param_partner_id, param_domain_name and param_domain_name.value,
@@ -293,23 +297,27 @@ class FulfillmentAutomation(resources.FulfillmentAutomation, ConnectorMixin):
 
             if rv:
                 return rv
-        elif request.type in ('suspend', 'cancel'):
-            self.suspend_project(
-                request,
-                param_domain_id and param_domain_id.value or None,
-                param_project_id and param_project_id.value or None,
-                param_user_id and param_user_id.value or None,
-            )
+        elif request.type == 'suspend':
+            pid = param_project_id and param_project_id.value or None
+            uid = param_user_id and param_user_id.value or None
+
+            self.operate_servers(pid, 'stop')
+            self.suspend_user(uid)
+            self.suspend_project(request, pid)
+
+            return self.get_answer(request.asset.product.id, 'revoke') or ''
+        elif request.type == 'cancel':
+            pid = param_project_id and param_project_id.value or None
+            uid = param_user_id and param_user_id.value or None
+            data_retention_period = datetime.utcnow() + timedelta(days=conf.data_retention_period)
+            description = 'SCHEDULED FOR DELETION AFTER {}'.format(data_retention_period.strftime('%Y-%m-%d'))
 
             # TODO implement automatic cleanup after Asset cancellation
-            try:
-                pid = param_project_id and param_project_id.value or None
-                if request.type == 'cancel' and pid:
-                    self.keystone_client.projects.update(
-                        pid, description='SCHEDULED FOR DELETE')
-            except Exception:
-                pass
+            self.operate_servers(pid, 'shelve', description=description)
+            self.suspend_user(uid, description=description)
+            self.suspend_project(request, pid, description=description)
 
+            # TODO: special template for this case?
             return self.get_answer(request.asset.product.id, 'revoke') or ''
 
         self.logger.warning("Do not know what to do with such request")

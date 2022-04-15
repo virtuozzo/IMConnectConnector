@@ -10,41 +10,18 @@ from dateutil.parser import isoparse
 from dateutil.relativedelta import relativedelta
 from gnocchiclient.exceptions import BadRequest as GnocchiBadRequest
 
-from cloudblue_connector.consumption.base import Consumption
+from cloudblue_connector.consumption.base import Consumption, AggregatedConsumption
 
 
-class LoadBalancer(Consumption):
-    def collect_consumption(self, project, start_time, end_time):
-        try:
-            measures = self.gnocchi_client.aggregates.fetch(
-                operations="(aggregate count (metric network.services.lb.loadbalancer mean))",
-                resource_type="loadbalancer", search="project_id={}".format(project.id),
-                start=start_time, stop=end_time
-            ).get('measures', {}).get('aggregated', [])
-        except GnocchiBadRequest:
-            # means metric NotFound
-            measures = []
-        # full value is only every hour
-        measures = [m for m in measures if m[0].minute == 0]
-        values = [m[-1] for m in measures]
-        return int(sum(values))
+class LoadBalancer(AggregatedConsumption):
+    resource_type = 'loadbalancer'
+    operation = '(aggregate count (metric network.services.lb.loadbalancer mean))'
+    hourly = False
 
 
-class K8saas(Consumption):
-    def collect_consumption(self, project, start_time, end_time):
-        try:
-            measures = self.gnocchi_client.aggregates.fetch(
-                operations="(aggregate count (metric magnum.cluster mean))",
-                resource_type="coe_cluster", search="project_id={}".format(project.id),
-                start=start_time, stop=end_time
-            ).get('measures', {}).get('aggregated', [])
-        except GnocchiBadRequest:
-            # means metric NotFound
-            measures = []
-        # full value is only every hour
-        measures = [m for m in measures if m[0].minute == 0]
-        values = [m[-1] for m in measures]
-        return int(sum(values))
+class K8saas(AggregatedConsumption):
+    resource_type = 'coe_cluster'
+    operation = '(aggregate count (metric magnum.cluster mean))'
 
 
 class WinVM(Consumption):

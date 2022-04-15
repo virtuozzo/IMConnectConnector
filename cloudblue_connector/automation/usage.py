@@ -56,6 +56,9 @@ class UsageAutomation(resources.UsageAutomation, ConnectorMixin):
         # store each processed request for debug
         self.usages.append(request)
 
+        if self.test_marketplace_requests_filter(Config.get_instance(), request.id, request.marketplace):
+            return
+
         today = datetime.utcnow() - timedelta(minutes=10)
         name_format = 'Report for {asset} {date}'
 

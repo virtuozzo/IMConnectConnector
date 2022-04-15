@@ -26,10 +26,17 @@ Connector accepts configuration file in json format. Next parameters are expecte
      (default: _true_)
    - hidePasswordsInLog - wipe plain-text passwords Connector events output.
      (default: _true_)
+   - testMarketplaceId - ID of Marketplace, to place asset requests for evaluation. If not set, all asset requests from all Marketplaces will be processed regardless of **testMode** setting.   
+   - testMode - test mode enabled or not.
+     If set to _true_, requests made in **testMarketplaceId** will be processed only.
+     If set to _false_, requests made in **testMarketplaceId** will be ignored.
+     (default: _false_)
  - apiEndpoint - CloudBlue Connect API endpoint url.
  - apiKey - CloudBlue Connect API key.
  - products - list of product IDs from CloudBlue Connect.
- - report_usage - list of product IDs with PAYG resource model from CloudBlue Connect.  
+ - report_usage - list of product IDs with PAYG resource model from CloudBlue Connect.
+ - dataRetentionPeriod - period (in days) to keep customer data after subscription cancellation
+   (default: _15_)
  - templates - set of template IDs that are used when Fulfillment is confirmed of cancelled.
  
 The repository contains configuration example:
